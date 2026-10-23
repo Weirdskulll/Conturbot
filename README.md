@@ -84,8 +84,8 @@ cmake --build build --config Release
 windeployqt build/ContourBot.exe
 ```
 
-Автосборка для GitHub Actions лежит в `ci/build.yml` — положи её в `.github/workflows/build.yml`,
-и GitHub будет собирать exe на каждый push, а на тег `v*` сам прикрепит zip к релизу.
+Автосборка для GitHub Actions лежит в `.github/workflows/build.yml`: GitHub собирает exe на каждый push,
+а на тег `v*` сам прикрепляет zip к релизу.
 
 ## Как это устроено
 
