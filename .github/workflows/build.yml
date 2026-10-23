@@ -9,12 +9,15 @@ on:
   pull_request:
   workflow_dispatch:
 
+# По умолчанию только чтение. Право записи есть лишь у шага публикации релиза.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   windows:
     runs-on: windows-latest
+    outputs:
+      zip_name: ${{ steps.package.outputs.zip_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -32,6 +35,7 @@ jobs:
         run: cmake --build build --config Release --parallel
 
       - name: Package
+        id: package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist/ContourBot | Out-Null
@@ -42,16 +46,27 @@ jobs:
           $name = "ContourBot-windows-x64"
           if ($env:GITHUB_REF -like "refs/tags/*") { $name = "ContourBot-$($env:GITHUB_REF_NAME)-windows-x64" }
           Compress-Archive -Path dist/ContourBot/* -DestinationPath "dist/$name.zip"
-          "ZIP_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "zip_name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZIP_NAME }}
-          path: dist/${{ env.ZIP_NAME }}.zip
+          name: ${{ steps.package.outputs.zip_name }}
+          path: dist/${{ steps.package.outputs.zip_name }}.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.windows.outputs.zip_name }}
+          path: dist
 
       - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/${{ env.ZIP_NAME }}.zip
+          files: dist/${{ needs.windows.outputs.zip_name }}.zip

@@ -13,7 +13,7 @@
   <img src="docs/screenshot.png" width="820" alt="Окно ContourBot">
 </p>
 
-> **Это игрушка.** ContourBot навайбкожен автором (**VKM**) вместе с Claude (Anthropic),
+> **Это игрушка.** ContourBot навайбкожен автором (**V K**) вместе с Claude (Anthropic),
 > просто чтобы поиграться с программами, в которых можно рисовать. Работает, но без гарантий.
 
 ## Что умеет
@@ -106,5 +106,5 @@ windeployqt build/ContourBot.exe
 
 ## Лицензия
 
-[GNU GPL 3.0](LICENSE). Автор — **VKM**, код написан вместе с Claude (Anthropic).
+[GNU GPL 3.0](LICENSE). Автор — **V K**, код написан вместе с Claude (Anthropic).
 Использует [Qt](https://www.qt.io/) по лицензии LGPL 3.

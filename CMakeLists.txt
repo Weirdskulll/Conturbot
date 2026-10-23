@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
-project(ContourBot VERSION 1.1.0 LANGUAGES CXX)
+project(ContourBot VERSION 1.1.1 LANGUAGES CXX)
 
 # Имя автора: показывается в «О программе» и в свойствах exe. Поменять можно здесь.
-set(APP_AUTHOR "VKM")
+set(APP_AUTHOR "V K")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,8 +10,8 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 # Работает и с Qt 6, и с Qt 5.15
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Concurrent)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Concurrent)
 
 set(SOURCES
     main.cpp
@@ -32,7 +32,7 @@ endif()
 
 add_executable(ContourBot WIN32 ${SOURCES})
 
-target_link_libraries(ContourBot PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
+target_link_libraries(ContourBot PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Concurrent)
 target_compile_definitions(ContourBot PRIVATE APP_VERSION="${PROJECT_VERSION}" APP_AUTHOR="${APP_AUTHOR}")
 
 if(WIN32)
