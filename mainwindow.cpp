@@ -544,6 +544,8 @@ void MainWindow::closeEvent(QCloseEvent* e)
 {
     m_countTimer.stop();
     m_drawer->requestStop();
+    // панель раскраски живёт без родителя: прячем её, чтобы она не удержала программу после закрытия окна
+    m_colorPanel->hide();
     saveSettings();
     e->accept();
 }
