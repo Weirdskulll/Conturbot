@@ -1,0 +1,35 @@
+# Сборка
+build/
+build-*/
+out/
+dist/
+*.exe
+*.obj
+*.o
+*.zip
+
+# Qt Creator
+.qtcreator/
+*.user
+*.user.*
+.qtc_clangd/
+compile_commands.json
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CMakeUserPresets.json
+
+# Visual Studio / VS Code
+.vs/
+.vscode/
+
+# Резервные копии и мусор системы
+*.bak
+*~
+Thumbs.db
+desktop.ini
+
+# Тестовые картинки в корне (примеры для README лежат в examples/)
+/test_*.png
