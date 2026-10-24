@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ContourBot VERSION 1.2.0 LANGUAGES CXX)
+project(ContourBot VERSION 1.3.0 LANGUAGES CXX)
 
 # Имя автора: показывается в «О программе» и в свойствах exe. Поменять можно здесь.
 set(APP_AUTHOR "V K")
@@ -21,6 +21,8 @@ set(SOURCES
     contours.h contours.cpp
     winutil.h winutil.cpp
     colorpanel.h colorpanel.cpp
+    previewview.h previewview.cpp
+    annotations.h annotations.cpp
     resources/resources.qrc
 )
 if(WIN32)

@@ -4,10 +4,15 @@
 #include "drawer.h"
 #include "winutil.h"
 #include "colorpanel.h"
+#include "previewview.h"
 
 #include <functional>
 
 #include <QApplication>
+#include <QButtonGroup>
+#include <QColorDialog>
+#include <QPixmap>
+#include <QSpinBox>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QCloseEvent>
@@ -113,52 +118,6 @@ private:
     QLabel* m_value;
     double m_scale;
     QString m_suffix;
-};
-
-// Превью: картинка с найденными контурами, вписанная в окно
-class PreviewView : public QWidget
-{
-public:
-    explicit PreviewView(QWidget* parent = nullptr) : QWidget(parent)
-    {
-        setMinimumSize(360, 280);
-        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    }
-    void setImage(const QImage& img)
-    {
-        m_img = img;
-        update();
-    }
-
-protected:
-    void paintEvent(QPaintEvent*) override
-    {
-        QPainter p(this);
-        const QColor bg = palette().color(QPalette::Window).darker(112);
-        p.fillRect(rect(), bg);
-        if (m_img.isNull()) {
-            p.setPen(palette().color(QPalette::WindowText));
-            QFont f = font();
-            f.setPointSize(f.pointSize() + 2);
-            p.setFont(f);
-            p.drawText(rect().adjusted(24, 24, -24, -24), Qt::AlignCenter | Qt::TextWordWrap,
-                       QStringLiteral("Перетащи сюда картинку,\nнажми «Открыть…» или Ctrl+V"));
-            return;
-        }
-        const QRect area = rect().adjusted(16, 16, -16, -16);
-        QSize s = m_img.size();
-        s.scale(area.size(), Qt::KeepAspectRatio);
-        QRect target(QPoint(0, 0), s);
-        target.moveCenter(area.center());
-        p.setRenderHint(QPainter::SmoothPixmapTransform);
-        p.fillRect(target.translated(3, 3), QColor(0, 0, 0, 40)); // лёгкая тень
-        p.drawImage(target, m_img);
-        p.setPen(QColor(0, 0, 0, 60));
-        p.drawRect(target.adjusted(0, 0, -1, -1));
-    }
-
-private:
-    QImage m_img;
 };
 
 // Выпадающий список, который обновляет пункты прямо перед открытием
@@ -293,8 +252,13 @@ void MainWindow::buildUi()
     rowImg->addWidget(pasteBtn);
     m_fileLabel = new QLabel(QStringLiteral("Картинка не выбрана"));
     m_fileLabel->setWordWrap(true);
+    auto* blankBtn = new QPushButton(QStringLiteral("Чистый холст — рисовать с нуля"));
+    blankBtn->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
+    blankBtn->setToolTip(QStringLiteral("Белый лист без картинки: рисуй на нём фигуры и пиши текст в редакторе над превью."));
     li->addLayout(rowImg);
+    li->addWidget(blankBtn);
     li->addWidget(m_fileLabel);
+    connect(blankBtn, &QPushButton::clicked, this, &MainWindow::newCanvas);
     connect(openBtn, &QPushButton::clicked, this, &MainWindow::openFile);
     connect(pasteBtn, &QPushButton::clicked, this, &MainWindow::pasteImage);
     connect(new QShortcut(QKeySequence::Paste, this), &QShortcut::activated, this, &MainWindow::pasteImage);
@@ -569,15 +533,147 @@ void MainWindow::buildUi()
     scroll->setFixedWidth(360);
 
     m_preview = new PreviewView;
+    m_editorBar = buildEditorBar();
+
+    auto* right = new QVBoxLayout;
+    right->setSpacing(6);
+    right->addWidget(m_editorBar);
+    right->addWidget(m_preview, 1);
 
     auto* central = new QWidget;
     auto* row = new QHBoxLayout(central);
     row->setContentsMargins(8, 8, 8, 8);
     row->addWidget(scroll);
-    row->addWidget(m_preview, 1);
+    row->addLayout(right, 1);
     setCentralWidget(central);
 
     updateAreaLabel();
+}
+
+// ------------------------------------------------------------ мини-редактор
+
+QWidget* MainWindow::buildEditorBar()
+{
+    auto* bar = new QWidget;
+    auto* lay = new QHBoxLayout(bar);
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->setSpacing(4);
+
+    // инструменты: всегда выбран ровно один
+    auto* group = new QButtonGroup(bar);
+    group->setExclusive(true);
+    struct ToolDef { PreviewView::Tool tool; const char* text; const char* tip; };
+    const ToolDef tools[] = {
+        {PreviewView::Tool::Select, "↖ Выбор", "Выбрать и двигать фигуру. За квадратики на концах можно тянуть. Delete — удалить, двойной клик по тексту — изменить."},
+        {PreviewView::Tool::Line, "╱ Линия", "Линия. С Shift — под углом, кратным 45°."},
+        {PreviewView::Tool::Arrow, "➜ Стрелка", "Стрелка от места нажатия к месту отпускания. С Shift — под углом, кратным 45°."},
+        {PreviewView::Tool::Rect, "▭ Прямоугольник", "Прямоугольник. С Shift — квадрат."},
+        {PreviewView::Tool::Ellipse, "◯ Эллипс", "Эллипс. С Shift — круг."},
+        {PreviewView::Tool::Text, "T Текст", "Кликни, куда поставить надпись, и напиши текст."},
+    };
+    for (const ToolDef& t : tools) {
+        auto* b = new QToolButton;
+        b->setText(QString::fromUtf8(t.text));
+        b->setToolTip(QString::fromUtf8(t.tip));
+        b->setCheckable(true);
+        b->setAutoRaise(true);
+        group->addButton(b, int(t.tool));
+        lay->addWidget(b);
+        if (t.tool == PreviewView::Tool::Select)
+            b->setChecked(true);
+    }
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    connect(group, &QButtonGroup::idClicked, this, [this](int id) {
+#else
+    connect(group, QOverload<int>::of(&QButtonGroup::buttonClicked), this, [this](int id) {
+#endif
+        m_preview->setTool(PreviewView::Tool(id));
+    });
+
+    lay->addSpacing(8);
+
+    // цвет: кнопка с образцом
+    m_colorBtn = new QToolButton;
+    m_colorBtn->setToolTip(QStringLiteral("Цвет фигуры или текста"));
+    m_colorBtn->setAutoRaise(true);
+    auto updateSwatch = [this] {
+        QPixmap px(18, 18);
+        px.fill(m_preview->color());
+        m_colorBtn->setIcon(QIcon(px));
+    };
+    updateSwatch();
+    connect(m_colorBtn, &QToolButton::clicked, this, [this, updateSwatch] {
+        const QColor c = QColorDialog::getColor(m_preview->color(), this, QStringLiteral("Цвет фигуры"));
+        if (c.isValid()) {
+            m_preview->setColor(c);
+            updateSwatch();
+        }
+    });
+    lay->addWidget(m_colorBtn);
+
+    auto* stroke = new QSpinBox;
+    stroke->setRange(1, 40);
+    stroke->setValue(3);
+    stroke->setSuffix(QStringLiteral(" px"));
+    stroke->setToolTip(QStringLiteral("Толщина линий (в пикселях итогового рисунка)"));
+    connect(stroke, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) { m_preview->setStrokePx(v); });
+    lay->addWidget(stroke);
+
+    auto* fontSize = new QSpinBox;
+    fontSize->setRange(8, 400);
+    fontSize->setValue(40);
+    fontSize->setPrefix(QStringLiteral("Aa "));
+    fontSize->setSuffix(QStringLiteral(" px"));
+    fontSize->setToolTip(QStringLiteral("Размер текста (в пикселях итогового рисунка)"));
+    connect(fontSize, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) { m_preview->setFontPx(v); });
+    lay->addWidget(fontSize);
+
+    auto* fill = new QCheckBox(QStringLiteral("Заливка"));
+    fill->setToolTip(QStringLiteral("Закрашивать прямоугольники и эллипсы целиком"));
+    connect(fill, &QCheckBox::toggled, this, [this](bool on) { m_preview->setFilled(on); });
+    lay->addWidget(fill);
+
+    lay->addStretch(1);
+
+    auto* undo = new QToolButton;
+    undo->setText(QStringLiteral("↶ Отменить"));
+    undo->setToolTip(QStringLiteral("Отменить последнее изменение фигур (Ctrl+Z)"));
+    undo->setAutoRaise(true);
+    connect(undo, &QToolButton::clicked, m_preview, &PreviewView::undo);
+    lay->addWidget(undo);
+
+    auto* del = new QToolButton;
+    del->setText(QStringLiteral("Удалить"));
+    del->setToolTip(QStringLiteral("Удалить выделенную фигуру (Delete)"));
+    del->setAutoRaise(true);
+    del->setEnabled(false);
+    connect(del, &QToolButton::clicked, m_preview, &PreviewView::deleteSelected);
+    connect(m_preview, &PreviewView::selectionChanged, del, &QToolButton::setEnabled);
+    lay->addWidget(del);
+
+    auto* clear = new QToolButton;
+    clear->setText(QStringLiteral("Очистить"));
+    clear->setToolTip(QStringLiteral("Убрать все нарисованные фигуры и надписи (можно отменить)"));
+    clear->setAutoRaise(true);
+    connect(clear, &QToolButton::clicked, m_preview, &PreviewView::removeAll);
+    lay->addWidget(clear);
+
+    connect(m_preview, &PreviewView::annotationsChanged, this, &MainWindow::scheduleRecalc);
+    connect(new QShortcut(QKeySequence::Undo, this), &QShortcut::activated, m_preview, &PreviewView::undo);
+
+    bar->setEnabled(false); // пока нет картинки, рисовать не на чем
+    return bar;
+}
+
+void MainWindow::newCanvas()
+{
+    // белый лист в пропорциях выбранной области (или 3:2, если область не выбрана)
+    QSize size = m_area.isValid() ? m_area.size() : QSize(1200, 800);
+    size.scale(1200, 1200, Qt::KeepAspectRatio);
+    QImage blank(size.expandedTo(QSize(100, 100)), QImage::Format_RGB32);
+    blank.fill(Qt::white);
+    setImage(blank, QStringLiteral("чистый холст"));
+    statusBar()->showMessage(QStringLiteral("Чистый холст готов. Выбери фигуру или текст над превью и рисуй."));
 }
 
 // ------------------------------------------------------------ настройки
@@ -730,6 +826,10 @@ void MainWindow::setImage(const QImage& img, const QString& name)
 {
     m_source = Contours::flattenOnWhite(img);
     m_fileLabel->setText(QStringLiteral("%1 · %2 × %3").arg(name).arg(img.width()).arg(img.height()));
+    // нарисованное относилось к прошлой картинке
+    m_preview->clearAnnotations();
+    m_preview->setEditable(!m_source.isNull() && !m_drawer->isRunning());
+    m_editorBar->setEnabled(!m_source.isNull());
     recalc();
     statusBar()->showMessage(QStringLiteral("Картинка загружена. Подкрути ползунки, пока контуры не понравятся."));
 }
@@ -854,6 +954,7 @@ void MainWindow::launchRecalc()
     in.coloring = coloringParams();
     in.step = m_step->value();
     in.showImage = m_showImage->isChecked();
+    in.annotations = m_preview->annotations();
 
     m_launchedGen = in.gen;
     if (!m_source.isNull())
@@ -871,7 +972,11 @@ RecalcResult MainWindow::computeRecalc(const RecalcInput& in)
         return r;
 
     const EdgeParams& p = in.edges;
-    r.fitted = Contours::fitInto(in.source, in.target, &r.offset);
+    // фигуры и текст из мини-редактора становятся частью картинки
+    QImage source = in.source;
+    if (!in.annotations.isEmpty())
+        Annotations::render(source, in.annotations);
+    r.fitted = Contours::fitInto(source, in.target, &r.offset);
     const int dm = in.drawMode;
     if (dm == 3) {
         r.coloring = Contours::buildColoring(r.fitted, in.coloring, p.minLen, p.simplify);
@@ -934,6 +1039,7 @@ void MainWindow::applyRecalc(const RecalcResult& r)
         return;
     }
     m_preview->setImage(r.preview);
+    m_preview->setDrawSize(r.fitted.size());
 
     const int dm = r.drawMode;
     const double delay = m_delay->value();
@@ -1385,6 +1491,9 @@ void MainWindow::setBusy(bool busy)
     for (QWidget* w : m_lockWhileBusy)
         w->setEnabled(!busy);
     m_stopBtn->setEnabled(busy);
+    // пока бот рисует, картинку менять нельзя — иначе контуры разойдутся с раскраской
+    m_preview->setEditable(!busy && !m_source.isNull());
+    m_editorBar->setEnabled(!busy && !m_source.isNull());
     if (!busy)
         updateAreaLabel();
 

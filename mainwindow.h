@@ -5,6 +5,7 @@
 #include <QMainWindow>
 #include <QTimer>
 
+#include "annotations.h"
 #include "contours.h"
 #include "drawer.h"
 
@@ -20,6 +21,7 @@ struct RecalcInput {
     ColoringParams coloring;
     double step = 3;
     bool showImage = true;
+    QVector<Annotation> annotations; // фигуры и текст из мини-редактора
 };
 
 struct RecalcResult {
@@ -71,6 +73,8 @@ private:
     void openFile();
     void loadFile(const QString& path);
     void pasteImage();
+    void newCanvas();                    // белый лист, чтобы рисовать с нуля
+    QWidget* buildEditorBar();           // панель мини-редактора над превью
     void setImage(const QImage& img, const QString& name);
 
     void scheduleRecalc();
@@ -164,6 +168,8 @@ private:
     // интерфейс
     PreviewView* m_preview = nullptr;
     QLabel* m_fileLabel = nullptr;
+    QWidget* m_editorBar = nullptr;
+    QToolButton* m_colorBtn = nullptr;
     QComboBox* m_drawMode = nullptr;   // контуры / штриховка / оба
     QLabel* m_contourHeader = nullptr;
     QLabel* m_hatchHeader = nullptr;
