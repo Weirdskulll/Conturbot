@@ -41,6 +41,7 @@
 #include <QStatusBar>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 #include <QSignalBlocker>
 #include <QStandardItemModel>
 #include <QToolButton>
@@ -55,6 +56,23 @@
 
 // ============================================================ маленькие виджеты
 
+// Ползунок, который не перехватывает колёсико, пока на нём нет фокуса:
+// иначе прокрутка панели случайно меняет значения под курсором
+class WheelSafeSlider : public QSlider
+{
+public:
+    using QSlider::QSlider;
+
+protected:
+    void wheelEvent(QWheelEvent* e) override
+    {
+        if (hasFocus())
+            QSlider::wheelEvent(e);
+        else
+            e->ignore(); // колёсико уходит панели, и она прокручивается
+    }
+};
+
 // Ползунок с подписью и текущим значением
 class LabeledSlider : public QWidget
 {
@@ -67,9 +85,12 @@ public:
         grid->setContentsMargins(0, 0, 0, 0);
         grid->setVerticalSpacing(2);
         auto* name = new QLabel(title);
+        name->setWordWrap(true); // длинная подпись переносится, а не расширяет панель
         m_value = new QLabel;
         m_value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        m_slider = new QSlider(Qt::Horizontal);
+        m_slider = new WheelSafeSlider(Qt::Horizontal);
+        m_slider->setFocusPolicy(Qt::StrongFocus);
+        grid->setColumnStretch(0, 1);
         m_slider->setRange(qRound(lo * scale), qRound(hi * scale));
         grid->addWidget(name, 0, 0);
         grid->addWidget(m_value, 0, 1);
@@ -420,6 +441,9 @@ void MainWindow::buildUi()
     for (const SpeedProfile& p : kSpeedProfiles)
         m_speedProfile->addItem(QString::fromUtf8(p.name));
     m_speedProfile->addItem(QStringLiteral("Свои настройки"));
+    // длинные названия профилей не должны растягивать левую панель
+    m_speedProfile->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_speedProfile->setMinimumContentsLength(12);
     m_speedProfile->setToolTip(QStringLiteral(
         "Если программа не успевает за ботом (пропускает линии, тянет след между штрихами) — "
         "выбери профиль помедленнее или подкрути паузы в тонкой настройке."));
@@ -431,12 +455,14 @@ void MainWindow::buildUi()
     m_beforePress = new LabeledSlider(QStringLiteral("Пауза перед нажатием"), 0, 500, 15, 1, QStringLiteral(" мс"));
     m_afterPress = new LabeledSlider(QStringLiteral("Пауза после нажатия"), 0, 500, 10, 1, QStringLiteral(" мс"));
     m_beforeRelease = new LabeledSlider(QStringLiteral("Пауза перед отпусканием"), 0, 500, 5, 1, QStringLiteral(" мс"));
-    m_afterRelease = new LabeledSlider(QStringLiteral("Пауза после отпускания (против «шлейфа»)"), 0, 1000, 30, 1,
-                                       QStringLiteral(" мс"));
+    m_afterRelease = new LabeledSlider(QStringLiteral("Пауза после отпускания"), 0, 1000, 30, 1, QStringLiteral(" мс"));
+    m_afterRelease->setToolTip(QStringLiteral(
+        "Главное средство от «шлейфа»: курсор не уедет к следующему штриху, пока программа не заметит отпускание."));
     m_clickPause = new LabeledSlider(QStringLiteral("Пауза после клика ведром"), 0, 2000, 80, 1, QStringLiteral(" мс"));
-    m_smoothTravel = new QCheckBox(QStringLiteral("Вести курсор к следующему штриху плавно, а не прыжком"));
+    m_smoothTravel = new QCheckBox(QStringLiteral("Плавный переход между штрихами"));
     m_smoothTravel->setToolTip(QStringLiteral(
-        "Помогает в играх и программах, которые рисуют линию за «телепортом» курсора."));
+        "Курсор едет к следующему штриху по шагам, а не прыжком. Помогает в играх и программах, "
+        "которые рисуют линию за «телепортом» курсора."));
     m_guard = new QCheckBox(QStringLiteral("Остановить, если я сдвину мышь"));
     m_guard->setChecked(true);
 
