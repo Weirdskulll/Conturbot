@@ -29,7 +29,9 @@ public:
 
     using QThread::QThread;
 
-    void setJob(const Job& job) { m_job = job; }
+    // Флаг остановки сбрасываем здесь, а не в run(): иначе «Стоп», нажатый между
+    // setJob() и фактическим запуском потока (пауза перед стартом), терялся бы.
+    void setJob(const Job& job) { m_job = job; m_stop = false; }
     void requestStop() { m_stop = true; }
 
 signals:

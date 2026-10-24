@@ -74,7 +74,6 @@ bool keyDown(int vk)
 
 void Drawer::run()
 {
-    m_stop = false;
     const bool ok = runJob();
     emit completed(ok);
 }

@@ -41,6 +41,8 @@
 #include <QStatusBar>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QStandardItemModel>
+#include <QtConcurrent/QtConcurrentRun>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -179,6 +181,7 @@ MainWindow::MainWindow(QWidget* parent)
     m_recalcTimer.setSingleShot(true);
     m_recalcTimer.setInterval(150);
     connect(&m_recalcTimer, &QTimer::timeout, this, &MainWindow::recalc);
+    connect(&m_recalcWatcher, &QFutureWatcherBase::finished, this, &MainWindow::onRecalcFinished);
 
     m_countTimer.setInterval(1000);
     connect(&m_countTimer, &QTimer::timeout, this, &MainWindow::countdownTick);
@@ -188,6 +191,7 @@ MainWindow::MainWindow(QWidget* parent)
     help->addAction(QStringLiteral("О программе ContourBot"), this, [this] { showAbout(); });
     help->addAction(QStringLiteral("О Qt"), this, [] { QApplication::aboutQt(); });
     loadSettings();
+    syncKeyCombos();
     updateModeWidgets();
     refreshWindows();
 
@@ -410,6 +414,8 @@ void MainWindow::buildUi()
     keys->addRow(QStringLiteral("Начать рисовать:"), m_startKey);
     keys->addRow(QStringLiteral("Остановить:"), m_stopKey);
     connect(m_startKey, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::registerHotkey);
+    connect(m_startKey, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::syncKeyCombos);
+    connect(m_stopKey, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::syncKeyCombos);
 
     auto* hint = new QLabel(QStringLiteral(
         "Клавиши работают в любом окне: открой Paint, возьми карандаш, выбери цвет и нажми клавишу старта."));
@@ -544,6 +550,8 @@ void MainWindow::closeEvent(QCloseEvent* e)
 {
     m_countTimer.stop();
     m_drawer->requestStop();
+    // панель раскраски живёт без родителя: прячем её, чтобы она не удержала программу после закрытия окна
+    m_colorPanel->hide();
     saveSettings();
     e->accept();
 }
@@ -702,45 +710,111 @@ void MainWindow::recalc()
     // картинка или настройки поменялись — начатая раскраска больше не совпадает
     if (m_phase == Phase::WaitColor)
         finishColoring(false);
-    if (m_source.isNull()) {
-        m_strokes.clear();
+    ++m_recalcGen;
+    // если что-то уже считается, новый расчёт запустится, когда старый закончится
+    if (m_launchedGen == 0)
+        launchRecalc();
+}
+
+void MainWindow::launchRecalc()
+{
+    RecalcInput in;
+    in.gen = m_recalcGen;
+    in.source = m_source;
+    // контуры ищем сразу в том размере, в котором будем рисовать
+    in.target = m_area.isValid() ? m_area.size() : m_source.size();
+    if (!m_area.isValid() && qMax(in.target.width(), in.target.height()) > 900)
+        in.target.scale(900, 900, Qt::KeepAspectRatio);
+    in.drawMode = m_drawMode->currentIndex();
+    in.edges = params();
+    in.hatch = hatchParams();
+    in.coloring = coloringParams();
+    in.step = m_step->value();
+    in.showImage = m_showImage->isChecked();
+
+    m_launchedGen = in.gen;
+    if (!m_source.isNull())
+        m_info->setText(QStringLiteral("Считаю контуры…"));
+    m_recalcWatcher.setFuture(QtConcurrent::run([in] { return computeRecalc(in); }));
+}
+
+RecalcResult MainWindow::computeRecalc(const RecalcInput& in)
+{
+    // Работает в фоновом потоке: только картинки и вычисления, никаких виджетов
+    RecalcResult r;
+    r.gen = in.gen;
+    r.drawMode = in.drawMode;
+    if (in.source.isNull())
+        return r;
+
+    const EdgeParams& p = in.edges;
+    r.fitted = Contours::fitInto(in.source, in.target, &r.offset);
+    const int dm = in.drawMode;
+    if (dm == 3) {
+        r.coloring = Contours::buildColoring(r.fitted, in.coloring, p.minLen, p.simplify);
+        r.strokes = r.coloring.outline;
+    } else {
+        if (dm != 1) // сначала контуры, потом тени
+            r.strokes = Contours::traceStrokes(Contours::detectEdges(r.fitted, p),
+                                               r.fitted.width(), r.fitted.height(), p.minLen, p.simplify);
+        if (dm != 0)
+            r.strokes += Contours::hatchStrokes(r.fitted, in.hatch);
+    }
+    if (dm == 3 && in.showImage)
+        r.preview = r.coloring.posterized;
+    else
+        r.preview = Contours::renderPreview(r.fitted, r.strokes, in.showImage);
+
+    for (const Stroke& s : r.strokes)
+        r.points += Contours::densify(s, in.step).size();
+    return r;
+}
+
+void MainWindow::onRecalcFinished()
+{
+    if (m_launchedGen == 0)
+        return; // этот результат уже забрали в ensureRecalcDone()
+    const RecalcResult r = m_recalcWatcher.result();
+    m_launchedGen = 0;
+    if (r.gen != m_recalcGen) {
+        // пока считали, настройки снова поменялись — считаем заново с новыми
+        launchRecalc();
+        return;
+    }
+    applyRecalc(r);
+    m_appliedGen = r.gen;
+}
+
+void MainWindow::ensureRecalcDone()
+{
+    if (m_recalcTimer.isActive())
+        recalc();
+    while (m_appliedGen != m_recalcGen) {
+        if (m_launchedGen == 0)
+            launchRecalc();
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        m_recalcWatcher.waitForFinished();
+        QApplication::restoreOverrideCursor();
+        onRecalcFinished();
+    }
+}
+
+void MainWindow::applyRecalc(const RecalcResult& r)
+{
+    m_fitted = r.fitted;
+    m_offset = r.offset;
+    m_strokes = r.strokes;
+    m_coloring = r.coloring;
+    if (m_fitted.isNull()) {
         m_preview->setImage(QImage());
         m_info->setText(QString());
         return;
     }
+    m_preview->setImage(r.preview);
 
-    // контуры ищем сразу в том размере, в котором будем рисовать
-    QSize target = m_area.isValid() ? m_area.size() : m_source.size();
-    if (!m_area.isValid() && qMax(target.width(), target.height()) > 900)
-        target.scale(900, 900, Qt::KeepAspectRatio);
-
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    const EdgeParams p = params();
-    m_fitted = Contours::fitInto(m_source, target, &m_offset);
-    const int dm = m_drawMode->currentIndex();
-    m_strokes.clear();
-    m_coloring = Coloring();
-    if (dm == 3) {
-        m_coloring = Contours::buildColoring(m_fitted, coloringParams(), p.minLen, p.simplify);
-        m_strokes = m_coloring.outline;
-    } else {
-        if (dm != 1) // сначала контуры, потом тени
-            m_strokes = Contours::traceStrokes(Contours::detectEdges(m_fitted, p),
-                                               m_fitted.width(), m_fitted.height(), p.minLen, p.simplify);
-        if (dm != 0)
-            m_strokes += Contours::hatchStrokes(m_fitted, hatchParams());
-    }
-    if (dm == 3 && m_showImage->isChecked())
-        m_preview->setImage(m_coloring.posterized);
-    else
-        m_preview->setImage(Contours::renderPreview(m_fitted, m_strokes, m_showImage->isChecked()));
-    QApplication::restoreOverrideCursor();
-
-    qint64 points = 0;
-    for (const Stroke& s : m_strokes)
-        points += Contours::densify(s, m_step->value()).size();
+    const int dm = r.drawMode;
     const double delay = m_delay->value();
-    const double sec = (points * (delay + 0.05) + m_strokes.size() * (delay * 10 + 5)) / 1000.0;
+    const double sec = (r.points * (delay + 0.05) + m_strokes.size() * (delay * 10 + 5)) / 1000.0;
 
     QString text = QStringLiteral("Линий: %1 · рисовать примерно %2").arg(m_strokes.size()).arg(formatTime(sec));
     if (dm == 3) {
@@ -1007,8 +1081,7 @@ void MainWindow::startDrawing()
         fillCurrentColor();
         return;
     }
-    if (m_recalcTimer.isActive())
-        recalc();
+    ensureRecalcDone(); // рисуем только по актуальным контурам
 
     QString problem;
     if (m_source.isNull())
@@ -1205,6 +1278,23 @@ void MainWindow::restoreWindow()
 }
 
 // ------------------------------------------------------------ горячая клавиша
+
+void MainWindow::syncKeyCombos()
+{
+    // Одна клавиша на старт и на остановку ломает глобальный хоткей остановки,
+    // поэтому в каждом списке блокируем клавишу, уже занятую в другом.
+    const int startVk = m_startKey->currentData().toInt();
+    if (m_stopKey->currentData().toInt() == startVk)
+        m_stopKey->setCurrentIndex(0); // Esc: в списке старта его нет, так что конфликт исчезает
+    const int stopVk = m_stopKey->currentData().toInt();
+
+    if (auto* model = qobject_cast<QStandardItemModel*>(m_startKey->model()))
+        for (int i = 0; i < m_startKey->count(); ++i)
+            model->item(i)->setEnabled(m_startKey->itemData(i).toInt() != stopVk);
+    if (auto* model = qobject_cast<QStandardItemModel*>(m_stopKey->model()))
+        for (int i = 0; i < m_stopKey->count(); ++i)
+            model->item(i)->setEnabled(m_stopKey->itemData(i).toInt() != startVk);
+}
 
 void MainWindow::registerHotkey()
 {

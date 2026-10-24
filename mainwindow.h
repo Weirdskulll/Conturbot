@@ -1,11 +1,37 @@
 #pragma once
 
+#include <QFutureWatcher>
 #include <QImage>
 #include <QMainWindow>
 #include <QTimer>
 
 #include "contours.h"
 #include "drawer.h"
+
+// Всё, что нужно для пересчёта контуров в фоне, и что из него получается.
+// Расчёт идёт в отдельном потоке, чтобы окно не замирало на больших картинках.
+struct RecalcInput {
+    quint64 gen = 0;        // номер запроса: по нему отбрасываем устаревшие результаты
+    QImage source;
+    QSize target;
+    int drawMode = 0;
+    EdgeParams edges;
+    HatchParams hatch;
+    ColoringParams coloring;
+    double step = 3;
+    bool showImage = true;
+};
+
+struct RecalcResult {
+    quint64 gen = 0;
+    int drawMode = 0;
+    QImage fitted;
+    QPoint offset;
+    QVector<Stroke> strokes;
+    Coloring coloring;
+    QImage preview;
+    qint64 points = 0;      // сколько точек пройдёт курсор (для оценки времени)
+};
 
 class QCheckBox;
 class QComboBox;
@@ -47,7 +73,13 @@ private:
     void setImage(const QImage& img, const QString& name);
 
     void scheduleRecalc();
-    void recalc();
+    void recalc();                        // запросить пересчёт (результат придёт асинхронно)
+    void launchRecalc();                  // запустить фоновый расчёт с текущими настройками
+    void onRecalcFinished();
+    void applyRecalc(const RecalcResult& r);
+    void ensureRecalcDone();              // дождаться актуального результата (перед рисованием)
+    static RecalcResult computeRecalc(const RecalcInput& in);
+    void syncKeyCombos();                 // нельзя выбрать одну клавишу и для старта, и для остановки
     void updateModeWidgets();
     EdgeParams params() const;
     HatchParams hatchParams() const;
@@ -117,6 +149,10 @@ private:
     QString m_savedExe;    // программа, выбранная в прошлый раз
 
     QTimer m_recalcTimer;
+    QFutureWatcher<RecalcResult> m_recalcWatcher;
+    quint64 m_recalcGen = 0;      // последний запрошенный пересчёт
+    quint64 m_launchedGen = 0;    // какой сейчас считается в фоне (0 = ничего)
+    quint64 m_appliedGen = 0;     // какой уже показан
     QTimer m_countTimer;
     int m_count = 0;
     bool m_restoreAfter = false;
