@@ -39,6 +39,7 @@ class QGroupBox;
 class QLabel;
 class QProgressBar;
 class QPushButton;
+class QToolButton;
 class ColorPanel;
 class Drawer;
 class LabeledSlider;
@@ -80,6 +81,8 @@ private:
     void ensureRecalcDone();              // дождаться актуального результата (перед рисованием)
     static RecalcResult computeRecalc(const RecalcInput& in);
     void syncKeyCombos();                 // нельзя выбрать одну клавишу и для старта, и для остановки
+    void applySpeedProfile(int index);    // подставить паузы из готового профиля скорости
+    void markCustomProfile();             // ручная правка пауз = «Свои настройки»
     void updateModeWidgets();
     EdgeParams params() const;
     HatchParams hatchParams() const;
@@ -182,8 +185,18 @@ private:
     QPushButton* m_areaBtn = nullptr;
     QPushButton* m_checkBtn = nullptr;
     QPushButton* m_testBtn = nullptr;
+    QComboBox* m_speedProfile = nullptr;
     LabeledSlider* m_step = nullptr;
     LabeledSlider* m_delay = nullptr;
+    LabeledSlider* m_beforePress = nullptr;
+    LabeledSlider* m_afterPress = nullptr;
+    LabeledSlider* m_beforeRelease = nullptr;
+    LabeledSlider* m_afterRelease = nullptr;
+    LabeledSlider* m_clickPause = nullptr;
+    QCheckBox* m_smoothTravel = nullptr;
+    QToolButton* m_fineToggle = nullptr;
+    QWidget* m_fineBox = nullptr;
+    bool m_applyingProfile = false;   // идёт подстановка профиля — это не ручная правка
     QCheckBox* m_guard = nullptr;
     QComboBox* m_startKey = nullptr;
     QComboBox* m_stopKey = nullptr;

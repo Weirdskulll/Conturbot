@@ -137,6 +137,21 @@ bool Drawer::runJob()
         last = p;
         haveLast = true;
     };
+    // Переход к началу следующего штриха с отпущенной кнопкой. По умолчанию — прыжком,
+    // а для программ, которые рисуют «шлейф» за телепортом, — плавно, по шагам.
+    auto travelTo = [&](const QPoint& p) -> bool {
+        if (job.smoothTravel && haveLast && last != p) {
+            const Stroke path = Contours::densify(Stroke{last, p}, std::max(2.0, job.step * 2));
+            for (int k = 1; k + 1 < path.size(); ++k) {
+                if (shouldStop())
+                    return false;
+                go(path[k]);
+                preciseWait(std::max(1.0, job.delayMs));
+            }
+        }
+        go(p);
+        return true;
+    };
 
     // ---- проверка области: курсор обходит рамку, ничего не нажимая
     if (!job.outline.isNull()) {
@@ -172,10 +187,11 @@ bool Drawer::runJob()
             if (shouldStop())
                 break;
             const QPoint p = origin + job.clicks[i];
-            go(p);
-            preciseWait(job.delayMs * 4 + 15);
+            if (!travelTo(p))
+                break;
+            preciseWait(job.beforePressMs);
             mouseButton(p, true);
-            preciseWait(job.delayMs * 2 + 10);
+            preciseWait(job.afterPressMs);
             mouseButton(p, false);
             preciseWait(job.clickPauseMs);
             emit progress(i + 1, total);
@@ -205,22 +221,26 @@ bool Drawer::runJob()
             if (shouldStop())
                 break;
             const QPoint p = origin + pts[j];
-            go(p);
             if (j == 0) {
-                preciseWait(job.delayMs * 4 + 3);
+                if (!travelTo(p))
+                    break;
+                preciseWait(job.beforePressMs);
                 mouseButton(p, true);
                 pressed = true;
-                preciseWait(job.delayMs * 2 + 2);
+                preciseWait(job.afterPressMs);
             } else {
+                go(p);
                 preciseWait(job.delayMs);
             }
         }
         if (pressed) {
-            preciseWait(job.delayMs + 1);
+            preciseWait(job.beforeReleaseMs);
             mouseButton(last, false);
             pressed = false;
         }
-        preciseWait(job.delayMs * 4 + 3);
+        // главное лекарство от «шлейфа»: даём программе обработать отпускание,
+        // прежде чем курсор уедет к следующему штриху
+        preciseWait(job.afterReleaseMs);
         if ((i + 1) % 5 == 0 || i + 1 == total)
             emit progress(i + 1, total);
     }
