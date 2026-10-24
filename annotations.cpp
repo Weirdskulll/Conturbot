@@ -58,7 +58,9 @@ void paint(QPainter& p, const Annotation& a, const QSizeF& size)
         const double len = QLineF(pa, pb).length();
         if (len < 0.5)
             break;
-        const double head = std::min(len * 0.5, std::max(10.0, w * 4.0));
+        // наконечник растёт и с толщиной, и с длиной стрелки, иначе после обводки
+        // контуром он превращается в незаметную точку
+        const double head = std::min(len * 0.5, std::max({18.0, w * 5.0, len * 0.08}));
         const double angle = std::atan2(pb.y() - pa.y(), pb.x() - pa.x());
         const double spread = qDegreesToRadians(26.0);
         const QPointF left = pb - QPointF(std::cos(angle - spread), std::sin(angle - spread)) * head;
