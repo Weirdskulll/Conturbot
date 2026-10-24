@@ -41,7 +41,10 @@
 #include <QStatusBar>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QWheelEvent>
+#include <QSignalBlocker>
 #include <QStandardItemModel>
+#include <QToolButton>
 #include <QtConcurrent/QtConcurrentRun>
 
 #ifdef Q_OS_WIN
@@ -52,6 +55,23 @@
 #endif
 
 // ============================================================ маленькие виджеты
+
+// Ползунок, который не перехватывает колёсико, пока на нём нет фокуса:
+// иначе прокрутка панели случайно меняет значения под курсором
+class WheelSafeSlider : public QSlider
+{
+public:
+    using QSlider::QSlider;
+
+protected:
+    void wheelEvent(QWheelEvent* e) override
+    {
+        if (hasFocus())
+            QSlider::wheelEvent(e);
+        else
+            e->ignore(); // колёсико уходит панели, и она прокручивается
+    }
+};
 
 // Ползунок с подписью и текущим значением
 class LabeledSlider : public QWidget
@@ -65,9 +85,12 @@ public:
         grid->setContentsMargins(0, 0, 0, 0);
         grid->setVerticalSpacing(2);
         auto* name = new QLabel(title);
+        name->setWordWrap(true); // длинная подпись переносится, а не расширяет панель
         m_value = new QLabel;
         m_value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        m_slider = new QSlider(Qt::Horizontal);
+        m_slider = new WheelSafeSlider(Qt::Horizontal);
+        m_slider->setFocusPolicy(Qt::StrongFocus);
+        grid->setColumnStretch(0, 1);
         m_slider->setRange(qRound(lo * scale), qRound(hi * scale));
         grid->addWidget(name, 0, 0);
         grid->addWidget(m_value, 0, 1);
@@ -156,6 +179,25 @@ public:
 // ============================================================ константы
 
 namespace {
+
+// Готовые наборы пауз. Программы и компьютеры успевают по-разному: Paint на мощном ПК
+// переварит что угодно, а игра или онлайн-рисовалка на слабом ноутбуке не заметит
+// отпускание кнопки и протянет «шлейф» к следующему штриху.
+struct SpeedProfile {
+    const char* name;
+    double step, delay, beforePress, afterPress, beforeRelease, afterRelease, clickPause;
+    bool smoothTravel;
+};
+const SpeedProfile kSpeedProfiles[] = {
+    {"Быстро — Paint на мощном ПК",            3,  1,  5,  5,  2,  10,  40, false},
+    {"Обычно",                                 3,  2, 15, 10,  5,  30,  80, false},
+    {"Надёжно — игры и онлайн-рисовалки",      2,  5, 40, 30, 20, 120, 200, true},
+    {"Медленный ПК — всё с большим запасом",   2, 10, 80, 60, 40, 250, 400, true},
+};
+constexpr int kProfileCount = int(sizeof(kSpeedProfiles) / sizeof(kSpeedProfiles[0]));
+constexpr int kDefaultProfile = 1;                 // «Обычно»
+constexpr int kCustomProfile = kProfileCount;     // «Свои настройки» — последний пункт
+
 constexpr int kHotkeyId = 1;
 constexpr int kStopHotkeyId = 2; // клавиша остановки: регистрируется только на время рисования
 
@@ -395,12 +437,63 @@ void MainWindow::buildUi()
     auto* gDraw = new QGroupBox(QStringLiteral("5. Рисование"));
     auto* ld = new QVBoxLayout(gDraw);
     ld->setSpacing(8);
+    m_speedProfile = new QComboBox;
+    for (const SpeedProfile& p : kSpeedProfiles)
+        m_speedProfile->addItem(QString::fromUtf8(p.name));
+    m_speedProfile->addItem(QStringLiteral("Свои настройки"));
+    // длинные названия профилей не должны растягивать левую панель
+    m_speedProfile->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_speedProfile->setMinimumContentsLength(12);
+    m_speedProfile->setToolTip(QStringLiteral(
+        "Если программа не успевает за ботом (пропускает линии, тянет след между штрихами) — "
+        "выбери профиль помедленнее или подкрути паузы в тонкой настройке."));
+    connect(m_speedProfile, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int i) { applySpeedProfile(i); });
+
     m_step = new LabeledSlider(QStringLiteral("Шаг курсора"), 1, 10, 3, 1, QStringLiteral(" px"));
-    m_delay = new LabeledSlider(QStringLiteral("Пауза на точку (больше = надёжнее)"), 0, 20, 2, 10, QStringLiteral(" мс"));
+    m_delay = new LabeledSlider(QStringLiteral("Пауза на каждую точку"), 0, 50, 2, 10, QStringLiteral(" мс"));
+    m_beforePress = new LabeledSlider(QStringLiteral("Пауза перед нажатием"), 0, 500, 15, 1, QStringLiteral(" мс"));
+    m_afterPress = new LabeledSlider(QStringLiteral("Пауза после нажатия"), 0, 500, 10, 1, QStringLiteral(" мс"));
+    m_beforeRelease = new LabeledSlider(QStringLiteral("Пауза перед отпусканием"), 0, 500, 5, 1, QStringLiteral(" мс"));
+    m_afterRelease = new LabeledSlider(QStringLiteral("Пауза после отпускания"), 0, 1000, 30, 1, QStringLiteral(" мс"));
+    m_afterRelease->setToolTip(QStringLiteral(
+        "Главное средство от «шлейфа»: курсор не уедет к следующему штриху, пока программа не заметит отпускание."));
+    m_clickPause = new LabeledSlider(QStringLiteral("Пауза после клика ведром"), 0, 2000, 80, 1, QStringLiteral(" мс"));
+    m_smoothTravel = new QCheckBox(QStringLiteral("Плавный переход между штрихами"));
+    m_smoothTravel->setToolTip(QStringLiteral(
+        "Курсор едет к следующему штриху по шагам, а не прыжком. Помогает в играх и программах, "
+        "которые рисуют линию за «телепортом» курсора."));
     m_guard = new QCheckBox(QStringLiteral("Остановить, если я сдвину мышь"));
     m_guard->setChecked(true);
-    connect(m_step->slider(), &QSlider::valueChanged, this, &MainWindow::scheduleRecalc);
-    connect(m_delay->slider(), &QSlider::valueChanged, this, &MainWindow::scheduleRecalc);
+
+    // тонкая настройка спрятана под кнопкой, чтобы не пугать с порога
+    m_fineToggle = new QToolButton;
+    m_fineToggle->setText(QStringLiteral("Тонкая настройка пауз"));
+    m_fineToggle->setCheckable(true);
+    m_fineToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_fineToggle->setArrowType(Qt::RightArrow);
+    m_fineToggle->setAutoRaise(true);
+    m_fineBox = new QWidget;
+    auto* lf = new QVBoxLayout(m_fineBox);
+    lf->setContentsMargins(0, 0, 0, 0);
+    lf->setSpacing(8);
+    for (QWidget* w : {static_cast<QWidget*>(m_beforePress), static_cast<QWidget*>(m_afterPress),
+                       static_cast<QWidget*>(m_beforeRelease), static_cast<QWidget*>(m_afterRelease),
+                       static_cast<QWidget*>(m_clickPause), static_cast<QWidget*>(m_smoothTravel)})
+        lf->addWidget(w);
+    m_fineBox->setVisible(false);
+    connect(m_fineToggle, &QToolButton::toggled, this, [this](bool on) {
+        m_fineBox->setVisible(on);
+        m_fineToggle->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+    });
+
+    // любое ручное изменение превращает профиль в «Свои настройки»
+    for (LabeledSlider* sl : {m_step, m_delay, m_beforePress, m_afterPress, m_beforeRelease, m_afterRelease,
+                              m_clickPause}) {
+        connect(sl->slider(), &QSlider::valueChanged, this, &MainWindow::markCustomProfile);
+        connect(sl->slider(), &QSlider::valueChanged, this, &MainWindow::scheduleRecalc); // оценка времени
+    }
+    connect(m_smoothTravel, &QCheckBox::toggled, this, &MainWindow::markCustomProfile);
 
     m_startKey = new QComboBox;
     m_stopKey = new QComboBox;
@@ -444,8 +537,13 @@ void MainWindow::buildUi()
     m_info = new QLabel;
     m_info->setWordWrap(true);
 
+    auto* profileRow = new QFormLayout;
+    profileRow->addRow(QStringLiteral("Скорость:"), m_speedProfile);
+    ld->addLayout(profileRow);
     ld->addWidget(m_step);
     ld->addWidget(m_delay);
+    ld->addWidget(m_fineToggle);
+    ld->addWidget(m_fineBox);
     ld->addWidget(m_guard);
     ld->addLayout(keys);
     ld->addWidget(hint);
@@ -460,7 +558,8 @@ void MainWindow::buildUi()
     col->addWidget(gDraw);
     col->addStretch();
 
-    m_lockWhileBusy = {gImage, gEdges, gWin, gArea, m_step, m_delay, m_guard, m_startKey, m_stopKey, m_drawBtn};
+    m_lockWhileBusy = {gImage, gEdges, gWin, gArea, m_speedProfile, m_step, m_delay, m_fineBox, m_guard,
+                       m_startKey, m_stopKey, m_drawBtn};
 
     auto* scroll = new QScrollArea;
     scroll->setWidget(panel);
@@ -502,8 +601,25 @@ void MainWindow::loadSettings()
     m_blur->setValue(s.value("blur", 1).toDouble());
     m_minLen->setValue(s.value("minLen", 8).toDouble());
     m_simplify->setValue(s.value("simplify", 0.8).toDouble());
-    m_step->setValue(s.value("step", 3).toDouble());
-    m_delay->setValue(s.value("delay", 2).toDouble());
+    {
+        // В версиях до 1.2.0 профилей не было: у таких пользователей сохраняем их шаг и паузу
+        // как «Свои настройки», а новичкам ставим «Обычно».
+        const SpeedProfile& d = kSpeedProfiles[kDefaultProfile];
+        const int savedProfile = s.value("speedProfile", s.contains("step") ? kCustomProfile : kDefaultProfile).toInt();
+        m_applyingProfile = true;
+        m_step->setValue(s.value("step", d.step).toDouble());
+        m_delay->setValue(s.value("delay", d.delay).toDouble());
+        m_beforePress->setValue(s.value("beforePress", d.beforePress).toDouble());
+        m_afterPress->setValue(s.value("afterPress", d.afterPress).toDouble());
+        m_beforeRelease->setValue(s.value("beforeRelease", d.beforeRelease).toDouble());
+        m_afterRelease->setValue(s.value("afterRelease", d.afterRelease).toDouble());
+        m_clickPause->setValue(s.value("clickPause", d.clickPause).toDouble());
+        m_smoothTravel->setChecked(s.value("smoothTravel", d.smoothTravel).toBool());
+        m_applyingProfile = false;
+        const QSignalBlocker block(m_speedProfile);
+        m_speedProfile->setCurrentIndex(qBound(0, savedProfile, kCustomProfile));
+        applySpeedProfile(m_speedProfile->currentIndex());
+    }
     m_showImage->setChecked(s.value("showImage", true).toBool());
     m_guard->setChecked(s.value("guard", true).toBool());
     m_startKey->setCurrentIndex(s.value("startKey", 7).toInt());
@@ -534,8 +650,15 @@ void MainWindow::saveSettings()
     s.setValue("blur", m_blur->value());
     s.setValue("minLen", m_minLen->value());
     s.setValue("simplify", m_simplify->value());
+    s.setValue("speedProfile", m_speedProfile->currentIndex());
     s.setValue("step", m_step->value());
     s.setValue("delay", m_delay->value());
+    s.setValue("beforePress", m_beforePress->value());
+    s.setValue("afterPress", m_afterPress->value());
+    s.setValue("beforeRelease", m_beforeRelease->value());
+    s.setValue("afterRelease", m_afterRelease->value());
+    s.setValue("clickPause", m_clickPause->value());
+    s.setValue("smoothTravel", m_smoothTravel->isChecked());
     s.setValue("showImage", m_showImage->isChecked());
     s.setValue("guard", m_guard->isChecked());
     s.setValue("startKey", m_startKey->currentIndex());
@@ -814,7 +937,9 @@ void MainWindow::applyRecalc(const RecalcResult& r)
 
     const int dm = r.drawMode;
     const double delay = m_delay->value();
-    const double sec = (r.points * (delay + 0.05) + m_strokes.size() * (delay * 10 + 5)) / 1000.0;
+    const double perStroke = m_beforePress->value() + m_afterPress->value() + m_beforeRelease->value()
+                           + m_afterRelease->value();
+    const double sec = (r.points * (delay + 0.05) + m_strokes.size() * perStroke) / 1000.0;
 
     QString text = QStringLiteral("Линий: %1 · рисовать примерно %2").arg(m_strokes.size()).arg(formatTime(sec));
     if (dm == 3) {
@@ -994,6 +1119,12 @@ Drawer::Job MainWindow::baseJob() const
     Drawer::Job job;
     job.step = m_step->value();
     job.delayMs = m_delay->value();
+    job.beforePressMs = m_beforePress->value();
+    job.afterPressMs = m_afterPress->value();
+    job.beforeReleaseMs = m_beforeRelease->value();
+    job.afterReleaseMs = m_afterRelease->value();
+    job.clickPauseMs = m_clickPause->value();
+    job.smoothTravel = m_smoothTravel->isChecked();
     job.guard = m_guard->isChecked();
     job.stopKey = m_stopKey->currentData().toInt();
     job.target = m_target;
@@ -1188,7 +1319,6 @@ void MainWindow::fillCurrentColor()
     job.origin = drawOrigin() + m_offset;
     if (m_fillMethod->currentIndex() == 0) {
         job.clicks = l.seeds;
-        job.clickPauseMs = 60 + m_delay->value() * 10;
         m_progress->setRange(0, l.seeds.size());
     } else {
         job.strokes = l.fill;
@@ -1275,6 +1405,33 @@ void MainWindow::restoreWindow()
     activateWindow();
     // Windows не всегда пускает фоновое окно вперёд — помогаем
     WinUtil::bringToFront(quintptr(winId()));
+}
+
+// ------------------------------------------------------------ профили скорости
+
+void MainWindow::applySpeedProfile(int index)
+{
+    if (index < 0 || index >= kProfileCount)
+        return; // «Свои настройки»: ничего не трогаем
+    const SpeedProfile& p = kSpeedProfiles[index];
+    m_applyingProfile = true;
+    m_step->setValue(p.step);
+    m_delay->setValue(p.delay);
+    m_beforePress->setValue(p.beforePress);
+    m_afterPress->setValue(p.afterPress);
+    m_beforeRelease->setValue(p.beforeRelease);
+    m_afterRelease->setValue(p.afterRelease);
+    m_clickPause->setValue(p.clickPause);
+    m_smoothTravel->setChecked(p.smoothTravel);
+    m_applyingProfile = false;
+}
+
+void MainWindow::markCustomProfile()
+{
+    if (m_applyingProfile || m_speedProfile->currentIndex() == kCustomProfile)
+        return;
+    const QSignalBlocker block(m_speedProfile);
+    m_speedProfile->setCurrentIndex(kCustomProfile);
 }
 
 // ------------------------------------------------------------ горячая клавиша

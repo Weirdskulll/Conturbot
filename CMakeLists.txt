@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ContourBot VERSION 1.1.1 LANGUAGES CXX)
+project(ContourBot VERSION 1.2.0 LANGUAGES CXX)
 
 # Имя автора: показывается в «О программе» и в свойствах exe. Поменять можно здесь.
 set(APP_AUTHOR "V K")
